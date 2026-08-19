@@ -884,7 +884,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.thread_id": input.threadId,
           "provider.request_id": input.requestId,
         });
-        yield* routed.adapter.respondToRequest(routed.threadId, input.requestId, input.decision);
+        yield* routed.adapter.respondToRequest(
+          routed.threadId,
+          input.requestId,
+          input.decision,
+          input.comment,
+        );
         yield* analytics.record("provider.request.responded", {
           provider: routed.adapter.provider,
           decision: input.decision,

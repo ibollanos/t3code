@@ -100,6 +100,8 @@ export const ProviderRespondToRequestInput = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   decision: ProviderApprovalDecision,
+  /** Optional user note attached to the decision (Claude Code's "amend" flow). */
+  comment: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderRespondToRequestInput = typeof ProviderRespondToRequestInput.Type;
 

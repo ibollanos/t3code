@@ -30,6 +30,7 @@ import { cn } from "~/lib/utils";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "../diffPanelStore";
 import { useTheme } from "../hooks/useTheme";
 import {
+  buildApprovalFileChangePatch,
   buildFileDiffRenderKey,
   getDiffCollapseIconClassName,
   getDiffLineStat,
@@ -37,6 +38,7 @@ import {
   resolveDiffThemeName,
   resolveFileDiffPath,
 } from "../lib/diffRendering";
+import { derivePendingApprovals } from "../session-logic";
 import { areAllDiffFilesCollapsed, toggleAllDiffFiles } from "../lib/diffCollapse";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useProject, useThread } from "../state/entities";
@@ -161,6 +163,22 @@ export default function DiffPanel({
     ),
   );
   const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  const isPendingScope = diffSelection.kind === "pending";
+  // Pending file-change approvals: proposed edits that have not been applied
+  // yet, synthesized from the approval payload rather than git checkpoints.
+  const pendingFileChanges = useMemo(
+    () =>
+      derivePendingApprovals(activeThread?.activities ?? []).flatMap((approval) =>
+        approval.fileChange === undefined ? [] : [approval.fileChange],
+      ),
+    [activeThread?.activities],
+  );
+  const pendingApprovalPatch = useMemo(() => {
+    if (pendingFileChanges.length === 0) return undefined;
+    return pendingFileChanges
+      .map((fileChange) => buildApprovalFileChangePatch(fileChange))
+      .join("\n");
+  }, [pendingFileChanges]);
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
   const orderedTurnDiffSummaries = useMemo(
@@ -186,6 +204,17 @@ export default function DiffPanel({
     );
   }, [diffSelection, orderedTurnDiffSummaries, routeThreadRef]);
 
+  // A pending-approval scope outlives nothing: once every pending file change
+  // is resolved (approved, declined, or cancelled), fall back to the git view.
+  useEffect(() => {
+    if (!routeThreadRef || diffSelection.kind !== "pending" || pendingFileChanges.length > 0) {
+      return;
+    }
+    useDiffPanelStore
+      .getState()
+      .selectGitScope(routeThreadRef, initialGitScope === "unstaged" ? "unstaged" : "branch");
+  }, [diffSelection, initialGitScope, pendingFileChanges.length, routeThreadRef]);
+
   const selectedTurnId = diffSelection.kind === "turn" ? diffSelection.turnId : null;
   const selectedGitScope = diffSelection.kind === "unstaged" ? "unstaged" : "branch";
   const selectedBaseRef = diffSelection.kind === "branch" ? diffSelection.baseRef : null;
@@ -201,15 +230,20 @@ export default function DiffPanel({
     selectedTurn &&
     (selectedTurn.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[selectedTurn.turnId]);
   const latestTurn = orderedTurnDiffSummaries[0];
-  const selectedScopeLabel =
-    selectedTurnId === null
+  const selectedScopeLabel = isPendingScope
+    ? "Pending approval"
+    : selectedTurnId === null
       ? selectedGitScope === "unstaged"
         ? "Working tree"
         : "Branch changes"
       : selectedTurn?.turnId === latestTurn?.turnId
         ? "Latest turn"
         : `Turn ${selectedCheckpointTurnCount ?? "?"}`;
-  const reviewSectionId = selectedTurn ? `turn:${selectedTurn.turnId}` : selectedGitScope;
+  const reviewSectionId = isPendingScope
+    ? "pending-approval"
+    : selectedTurn
+      ? `turn:${selectedTurn.turnId}`
+      : selectedGitScope;
   const collapseScopeKey = routeThreadRef
     ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}:${reviewSectionId}`
     : null;
@@ -218,11 +252,13 @@ export default function DiffPanel({
     collapsedDiffFiles.scopeKey === collapseScopeKey
       ? collapsedDiffFiles.fileKeys
       : EMPTY_COLLAPSED_DIFF_FILE_KEYS;
-  const reviewSectionTitle = selectedTurn
-    ? `Turn ${selectedCheckpointTurnCount ?? "?"}`
-    : selectedGitScope === "unstaged"
-      ? "Working tree"
-      : "Branch changes";
+  const reviewSectionTitle = isPendingScope
+    ? "Pending approval"
+    : selectedTurn
+      ? `Turn ${selectedCheckpointTurnCount ?? "?"}`
+      : selectedGitScope === "unstaged"
+        ? "Working tree"
+        : "Branch changes";
   const selectedCheckpointRange = useMemo(
     () =>
       typeof selectedCheckpointTurnCount === "number"
@@ -245,7 +281,7 @@ export default function DiffPanel({
     { enabled: isGitRepo && selectedTurn !== undefined },
   );
   const primaryBranchDiffPreview = useEnvironmentQuery(
-    selectedTurnId === null && activeThread && activeCwd
+    selectedTurnId === null && !isPendingScope && activeThread && activeCwd
       ? reviewEnvironment.diffPreview({
           environmentId: activeThread.environmentId,
           input: {
@@ -278,7 +314,11 @@ export default function DiffPanel({
     : primaryBranchDiffPreview;
   const refreshBranchDiffPreview = branchDiffPreview.refresh;
   const canRefreshGitDiff =
-    isGitRepo && selectedTurnId === null && activeThread != null && activeCwd != null;
+    isGitRepo &&
+    !isPendingScope &&
+    selectedTurnId === null &&
+    activeThread != null &&
+    activeCwd != null;
   const activeThreadRefreshKey = routeThreadRef
     ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}`
     : null;
@@ -313,7 +353,13 @@ export default function DiffPanel({
   );
   const loadDiffFiles = useMemo<FileDiffContentsLoader | undefined>(() => {
     const preview = branchDiffPreview.data;
-    if (selectedTurnId !== null || !activeThread || !preview || !selectedGitSource) {
+    if (
+      selectedTurnId !== null ||
+      isPendingScope ||
+      !activeThread ||
+      !preview ||
+      !selectedGitSource
+    ) {
       return undefined;
     }
 
@@ -329,6 +375,7 @@ export default function DiffPanel({
     activeThread,
     branchDiffPreview.data,
     getDiffFileContents,
+    isPendingScope,
     selectedGitSource,
     selectedTurnId,
   ]);
@@ -382,12 +429,23 @@ export default function DiffPanel({
   ];
   const gitDiff = selectedGitSource?.diff;
 
-  const selectedPatch = selectedTurn ? activeCheckpointDiff.data?.diff : gitDiff;
-  const isSelectedPatchTruncated = !selectedTurn && selectedGitSource?.truncated === true;
-  const isLoadingSelectedPatch = selectedTurn
-    ? activeCheckpointDiff.isPending
-    : branchDiffPreview.isPending;
-  const selectedPatchError = selectedTurn ? activeCheckpointDiff.error : branchDiffPreview.error;
+  const selectedPatch = isPendingScope
+    ? pendingApprovalPatch
+    : selectedTurn
+      ? activeCheckpointDiff.data?.diff
+      : gitDiff;
+  const isSelectedPatchTruncated =
+    !isPendingScope && !selectedTurn && selectedGitSource?.truncated === true;
+  const isLoadingSelectedPatch = isPendingScope
+    ? false
+    : selectedTurn
+      ? activeCheckpointDiff.isPending
+      : branchDiffPreview.isPending;
+  const selectedPatchError = isPendingScope
+    ? undefined
+    : selectedTurn
+      ? activeCheckpointDiff.error
+      : branchDiffPreview.error;
   const hasResolvedPatch = typeof selectedPatch === "string";
   const hasNoNetChanges = hasResolvedPatch && selectedPatch.trim().length === 0;
   const renderablePatch = useMemo(
@@ -521,9 +579,24 @@ export default function DiffPanel({
             <ChevronDownIcon className="size-3.5 shrink-0 opacity-70" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-60">
+            {pendingFileChanges.length > 0 && (
+              <DropdownMenuItem
+                className={isPendingScope ? "bg-foreground/[0.08]" : undefined}
+                onClick={() => {
+                  if (routeThreadRef) {
+                    useDiffPanelStore.getState().selectPending(routeThreadRef);
+                  }
+                }}
+              >
+                <span>Pending approval</span>
+                <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                  {pendingFileChanges.length}
+                </span>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               className={
-                selectedTurnId === null && selectedGitScope === "unstaged"
+                selectedTurnId === null && !isPendingScope && selectedGitScope === "unstaged"
                   ? "bg-foreground/[0.08]"
                   : undefined
               }
@@ -533,7 +606,7 @@ export default function DiffPanel({
             </DropdownMenuItem>
             <DropdownMenuItem
               className={
-                selectedTurnId === null && selectedGitScope === "branch"
+                selectedTurnId === null && !isPendingScope && selectedGitScope === "branch"
                   ? "bg-foreground/[0.08]"
                   : undefined
               }
@@ -835,7 +908,7 @@ export default function DiffPanel({
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           Select a thread to inspect turn diffs.
         </div>
-      ) : !isGitRepo ? (
+      ) : !isGitRepo && !isPendingScope ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           Turn diffs are unavailable because this project is not a git repository.
         </div>
@@ -921,6 +994,7 @@ export default function DiffPanel({
                   sectionId={reviewSectionId}
                   sectionTitle={reviewSectionTitle}
                   composerDraftTarget={composerDraftTarget}
+                  annotationsEnabled={!isPendingScope}
                   renderHeaderPrefix={(fileDiff, fileKey, collapsed) => {
                     const filePath = resolveFileDiffPath(fileDiff);
                     return (

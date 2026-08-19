@@ -134,6 +134,24 @@ describe("ssh command", () => {
     }),
   );
 
+  it.effect("uses the tarball spec template for fork builds", () =>
+    Effect.sync(() => {
+      process.env.T3CODE_SSH_PACKAGE_SPEC_TEMPLATE =
+        "https://example.com/releases/download/fork-v{version}/t3-{version}.tgz";
+      try {
+        assert.equal(
+          resolveRemoteT3CliPackageSpec({
+            appVersion: "0.0.34-fork.1",
+            updateChannel: "latest",
+          }),
+          "t3@https://example.com/releases/download/fork-v0.0.34-fork.1/t3-0.0.34-fork.1.tgz",
+        );
+      } finally {
+        delete process.env.T3CODE_SSH_PACKAGE_SPEC_TEMPLATE;
+      }
+    }),
+  );
+
   it.effect("reads the last non-empty ssh output line", () =>
     Effect.sync(() => {
       assert.equal(

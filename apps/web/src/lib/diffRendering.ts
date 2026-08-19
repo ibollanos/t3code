@@ -152,6 +152,47 @@ export function resolveFileDiffPath(fileDiff: FileDiffMetadata): string {
 }
 
 /**
+ * Synthesizes a unified patch from a pending approval's structured
+ * before/after content (provider tool input, not a git diff). `startLine` is
+ * the 1-based location of `oldString` in the current file when the provider
+ * resolved it; without it the hunk is anchored at line 1 and line numbers are
+ * approximate.
+ */
+export function buildApprovalFileChangePatch(change: {
+  filePath: string;
+  oldString: string;
+  newString: string;
+  startLine?: number;
+}): string {
+  const normalizedPath = change.filePath.replaceAll("\\", "/");
+  const oldLines = change.oldString.length > 0 ? change.oldString.split("\n") : [];
+  const newLines = change.newString.length > 0 ? change.newString.split("\n") : [];
+  const header =
+    oldLines.length === 0
+      ? [
+          `diff --git a/${normalizedPath} b/${normalizedPath}`,
+          "new file mode 100644",
+          "--- /dev/null",
+          `+++ b/${normalizedPath}`,
+        ]
+      : [
+          `diff --git a/${normalizedPath} b/${normalizedPath}`,
+          `--- a/${normalizedPath}`,
+          `+++ b/${normalizedPath}`,
+        ];
+  const hunkHeader =
+    oldLines.length === 0
+      ? `@@ -0,0 +1,${newLines.length} @@`
+      : `@@ -${change.startLine ?? 1},${oldLines.length} +${change.startLine ?? 1},${newLines.length} @@`;
+  return [
+    ...header,
+    hunkHeader,
+    ...oldLines.map((line) => `-${line}`),
+    ...newLines.map((line) => `+${line}`),
+  ].join("\n");
+}
+
+/**
  * What the file was called before the change. Only a rename makes it differ from the current
  * path, and the hosts that resolve a diff position against both sides need both names.
  */

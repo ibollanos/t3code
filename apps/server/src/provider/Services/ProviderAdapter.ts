@@ -70,11 +70,15 @@ export interface ProviderAdapterShape<TError> {
 
   /**
    * Respond to an interactive approval request.
+   *
+   * `comment` is an optional user note captured alongside the decision
+   * (approve or decline). Providers without a feedback channel may ignore it.
    */
   readonly respondToRequest: (
     threadId: ThreadId,
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
+    comment?: string,
   ) => Effect.Effect<void, TError>;
 
   /**

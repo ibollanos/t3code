@@ -1,0 +1,295 @@
+# Fork release pipeline: builds the personal-fork artifacts and publishes them
+# to a GitHub Release on this repository. Independent of upstream's release.yml
+# (which needs upstream's runners, signing secrets, and relay config).
+#
+# Trigger manually: Actions → Fork Release → Run workflow, pick a version like
+# 0.0.34-fork.1. Do NOT push bare v*.*.* tags on the fork — that pattern fires
+# upstream's release.yml.
+name: Fork Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.0.34-fork.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORK_VERSION: ${{ inputs.version }}
+
+jobs:
+  # The WSL backend inside the Windows package needs a Linux node-pty binary;
+  # node-pty publishes no Linux prebuilt, so build it here and hand it to the
+  # Windows job (mirrors upstream's build_wsl_node_pty).
+  build_wsl_node_pty:
+    name: Build WSL node-pty (linux-x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=t3...
+
+      - name: Build node-pty linux-x64 prebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          pty_pkg="$(node -e "console.log(require.resolve('node-pty/package.json', { paths: ['$GITHUB_WORKSPACE/apps/server'] }))")"
+          pty_dir="$(dirname "$pty_pkg")"
+          ( cd "$pty_dir" && npx --yes node-gyp rebuild )
+          mkdir -p wsl-prebuild
+          cp "$pty_dir/build/Release/pty.node" wsl-prebuild/pty.node
+          file wsl-prebuild/pty.node
+
+      - name: Upload node-pty linux-x64 prebuild
+        uses: actions/upload-artifact@v7
+        with:
+          name: wsl-node-pty-x64
+          path: wsl-prebuild/pty.node
+          if-no-files-found: error
+
+  build_cli:
+    name: Build CLI tarball (npm package)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "$FORK_VERSION"
+
+      - name: Build web package
+        run: vp run --filter @t3tools/web build
+
+      - name: Build CLI package
+        run: node apps/server/scripts/cli.ts build
+
+      - name: Pack CLI tarball
+        run: node scripts/pack-cli-tarball.mjs
+
+      - name: Upload CLI tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-tarball
+          path: release/*.tgz
+          if-no-files-found: error
+
+  build_appimage:
+    name: Build Linux AppImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # SSH environment provisioning installs the server on the remote host
+      # from the fork's release tarball (the fork version is not on npm).
+      T3CODE_SSH_PACKAGE_SPEC_TEMPLATE: "https://github.com/ibollanos/t3code/releases/download/fork-v{version}/t3-{version}.tgz"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/desktop...
+              - --filter=t3...
+              - --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install ImageMagick
+        shell: bash
+        run: |
+          if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y imagemagick
+          fi
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "$FORK_VERSION"
+
+      - name: Build AppImage (unsigned)
+        shell: bash
+        run: |
+          vp run dist:desktop:artifact \
+            --platform linux \
+            --target AppImage \
+            --arch x64 \
+            --build-version "$FORK_VERSION" \
+            --verbose
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-linux-x64
+          path: |
+            release/*.AppImage
+            release/*.blockmap
+            release/*.yml
+          if-no-files-found: error
+
+  build_windows:
+    name: Build Windows installer
+    runs-on: windows-2025
+    timeout-minutes: 45
+    needs: [build_wsl_node_pty]
+    env:
+      # Fork branding: distinct name/install identity so the fork never
+      # collides with an official T3 Code install, and the dark-green icon.
+      T3CODE_DESKTOP_PRODUCT_NAME: "T3 Code (Personal)"
+      T3CODE_DESKTOP_APP_ID: "com.ibollanos.t3code-personal"
+      T3CODE_DESKTOP_WINDOWS_ICON: "assets/fork/t3-green-windows.ico"
+      # SSH environment provisioning installs the server on the remote host
+      # from the fork's release tarball (the fork version is not on npm).
+      T3CODE_SSH_PACKAGE_SPEC_TEMPLATE: "https://github.com/ibollanos/t3code/releases/download/fork-v{version}/t3-{version}.tgz"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/desktop...
+              - --filter=t3...
+              - --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Download WSL node-pty prebuild
+        uses: actions/download-artifact@v7
+        with:
+          name: wsl-node-pty-x64
+          path: wsl-prebuild
+
+      - name: Install Spectre-mitigated MSVC libs
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $proc = Start-Process -FilePath $setupExe `
+            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64.Spectre", "--quiet", "--norestart" `
+            -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) {
+            $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
+            Write-Error "Visual Studio Installer failed with exit code $code"
+            exit $code
+          }
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Align package versions to release version
+        # bash explicitly: the job default on windows runners is pwsh, where
+        # "$FORK_VERSION" expands a (nonexistent) pwsh variable to an empty
+        # string and the script would write an empty version into package.json.
+        shell: bash
+        run: node scripts/update-release-package-versions.ts "$FORK_VERSION"
+
+      - name: Build Windows installer (unsigned)
+        shell: bash
+        run: |
+          vp run dist:desktop:artifact \
+            --platform win \
+            --target nsis \
+            --arch x64 \
+            --build-version "$FORK_VERSION" \
+            --wsl-prebuild "$GITHUB_WORKSPACE/wsl-prebuild/pty.node" \
+            --verbose
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-win-x64
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/*.yml
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build_cli, build_appimage, build_windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: release-assets
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: fork-v${{ inputs.version }}
+          name: T3 Code (personal fork) v${{ inputs.version }}
+          generate_release_notes: true
+          # A full (non-prerelease) release so the desktop auto-updater, which
+          # watches this fork's releases, picks it up.
+          prerelease: false
+          files: |
+            release-assets/*.tgz
+            release-assets/*.AppImage
+            release-assets/*.exe
+            release-assets/*.blockmap
+            release-assets/*.yml
+          fail_on_unmatched_files: true

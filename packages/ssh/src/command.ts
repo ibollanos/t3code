@@ -18,6 +18,24 @@ const PUBLISHABLE_T3_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 const DEFAULT_SSH_COMMAND_TIMEOUT_MS = 60_000;
 const MAX_SSH_ERROR_OUTPUT_LENGTH = 4_000;
 
+// Baked by the desktop build from T3CODE_SSH_PACKAGE_SPEC_TEMPLATE (forks point
+// it at their release tarball URL); also read from the process env so local
+// runs can override it.
+declare const __T3CODE_BUILD_SSH_PACKAGE_SPEC_TEMPLATE__: string | undefined;
+
+function sshPackageSpecTemplate(): string | undefined {
+  const buildTime =
+    typeof __T3CODE_BUILD_SSH_PACKAGE_SPEC_TEMPLATE__ === "undefined"
+      ? undefined
+      : __T3CODE_BUILD_SSH_PACKAGE_SPEC_TEMPLATE__;
+  const fromEnv =
+    typeof process !== "undefined"
+      ? process.env.T3CODE_SSH_PACKAGE_SPEC_TEMPLATE?.trim()
+      : undefined;
+  const template = buildTime && buildTime.length > 0 ? buildTime : fromEnv;
+  return template && template.length > 0 ? template : undefined;
+}
+
 /**
  * ssh is a real executable everywhere (`ssh.exe` on Windows), so it is always
  * spawned directly — cmd.exe shell mode would re-tokenize arguments such as
@@ -370,6 +388,13 @@ export function resolveRemoteT3CliPackageSpec(input: {
   readonly isDevelopment?: boolean;
 }): string {
   const appVersion = input.appVersion.trim();
+  const template = sshPackageSpecTemplate();
+  // Forks publish the CLI as a release tarball rather than an npm version, so
+  // `t3@<appVersion>` would not resolve on the registry. The template turns the
+  // app version into the fork's tarball URL (must contain `{version}`).
+  if (template && appVersion.length > 0 && template.includes("{version}")) {
+    return `t3@${template.replaceAll("{version}", appVersion)}`;
+  }
   if (!input.isDevelopment && PUBLISHABLE_T3_VERSION_PATTERN.test(appVersion)) {
     return `t3@${appVersion}`;
   }

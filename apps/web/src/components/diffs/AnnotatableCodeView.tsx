@@ -85,6 +85,12 @@ interface AnnotatableCodeViewProps {
   options: StyledDiffCodeViewOptions<DiffCommentAnnotationGroup>;
   viewerRef?: Ref<AnnotatableCodeViewHandle>;
   className?: string;
+  /**
+   * Line-selection commenting. Off for views whose diff is not anchored to a
+   * persisted source (e.g. pending approval edits), where a stored comment
+   * could never be restored.
+   */
+  annotationsEnabled?: boolean;
   renderHeaderPrefix: (
     fileDiff: FileDiffMetadata,
     fileKey: string,
@@ -105,6 +111,7 @@ export function AnnotatableCodeView({
   options,
   viewerRef,
   className,
+  annotationsEnabled = true,
   renderHeaderPrefix,
 }: AnnotatableCodeViewProps) {
   const addReviewComment = useComposerDraftStore((store) => store.addReviewComment);
@@ -126,26 +133,30 @@ export function AnnotatableCodeView({
   const items = useMemo<CodeViewDiffItem<DiffCommentAnnotationGroup>[]>(
     () =>
       files.map(({ fileDiff, filePath, fileKey, collapsed }) => {
-        const persisted = reviewComments
-          .filter(
-            (comment) =>
-              comment.sectionId === sectionId &&
-              comment.filePath === filePath &&
-              (comment.fenceLanguage ?? "diff") === "diff",
-          )
-          .reduce<DiffCommentLineAnnotation[]>((annotations, comment) => {
-            const range = restoreDiffReviewCommentRange(fileDiff, comment);
-            if (!range) return annotations;
-            return appendAnnotationEntry(annotations, range, {
-              id: comment.id,
-              kind: "comment",
-              range,
-              rangeLabel: comment.rangeLabel,
-              text: comment.text,
-            });
-          }, []);
+        const persisted = annotationsEnabled
+          ? reviewComments
+              .filter(
+                (comment) =>
+                  comment.sectionId === sectionId &&
+                  comment.filePath === filePath &&
+                  (comment.fenceLanguage ?? "diff") === "diff",
+              )
+              .reduce<DiffCommentLineAnnotation[]>((annotations, comment) => {
+                const range = restoreDiffReviewCommentRange(fileDiff, comment);
+                if (!range) return annotations;
+                return appendAnnotationEntry(annotations, range, {
+                  id: comment.id,
+                  kind: "comment",
+                  range,
+                  rangeLabel: comment.rangeLabel,
+                  text: comment.text,
+                });
+              }, [])
+          : [];
         const annotations =
-          draft?.fileKey === fileKey ? [...persisted, draft.annotation] : persisted;
+          annotationsEnabled && draft?.fileKey === fileKey
+            ? [...persisted, draft.annotation]
+            : persisted;
         return {
           id: fileKey,
           type: "diff",
@@ -163,7 +174,7 @@ export function AnnotatableCodeView({
           ),
         };
       }),
-    [draft, files, reviewComments, sectionId],
+    [annotationsEnabled, draft, files, reviewComments, sectionId],
   );
 
   const removeEntry = useCallback(
@@ -247,8 +258,8 @@ export function AnnotatableCodeView({
       onSelectedLinesChange={setSelectedLines}
       options={{
         ...options,
-        enableGutterUtility: !hasOpenComment,
-        enableLineSelection: !hasOpenComment,
+        enableGutterUtility: annotationsEnabled && !hasOpenComment,
+        enableLineSelection: annotationsEnabled && !hasOpenComment,
         onGutterUtilityClick: beginComment,
       }}
       renderHeaderPrefix={(item) =>

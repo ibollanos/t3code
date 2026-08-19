@@ -394,6 +394,7 @@ export function runtimeEventToActivities(
             ...(requestKind ? { requestKind } : {}),
             requestType: event.payload.requestType,
             ...(event.payload.detail ? { detail: event.payload.detail } : {}),
+            ...(event.payload.fileChange ? { fileChange: event.payload.fileChange } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

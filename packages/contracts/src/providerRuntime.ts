@@ -427,10 +427,27 @@ const ContentDeltaPayload = Schema.Struct({
 });
 export type ContentDeltaPayload = typeof ContentDeltaPayload.Type;
 
+/**
+ * Structured view of a proposed file edit attached to a file-change approval
+ * request. Adapters populate it when the underlying tool input carries the
+ * full before/after content (e.g. Claude's Edit/Write), so clients can render
+ * a line-aware diff instead of a raw JSON summary.
+ */
+export const RequestedFileChange = Schema.Struct({
+  filePath: Schema.String,
+  toolName: Schema.optional(Schema.String),
+  oldString: Schema.String,
+  newString: Schema.String,
+  /** 1-based line where `oldString` starts in the current file, when the adapter could locate it. */
+  startLine: Schema.optional(PositiveInt),
+});
+export type RequestedFileChange = typeof RequestedFileChange.Type;
+
 const RequestOpenedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   args: Schema.optional(Schema.Unknown),
+  fileChange: Schema.optional(RequestedFileChange),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
 

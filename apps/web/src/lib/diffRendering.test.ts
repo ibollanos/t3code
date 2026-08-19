@@ -1,10 +1,56 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  buildApprovalFileChangePatch,
   buildFileDiffRenderKey,
   buildPatchCacheKey,
   getDiffLineStat,
   getRenderablePatch,
 } from "./diffRendering";
+
+describe("buildApprovalFileChangePatch", () => {
+  it("builds an edit hunk anchored at the resolved start line", () => {
+    const patch = buildApprovalFileChangePatch({
+      filePath: "/repo/src/logger.rs",
+      oldString: "let a = 1;\nlet b = 2;",
+      newString: "let a = 3;",
+      startLine: 6,
+    });
+
+    expect(patch).toBe(
+      [
+        "diff --git a//repo/src/logger.rs b//repo/src/logger.rs",
+        "--- a//repo/src/logger.rs",
+        "+++ b//repo/src/logger.rs",
+        "@@ -6,2 +6,1 @@",
+        "-let a = 1;",
+        "-let b = 2;",
+        "+let a = 3;",
+      ].join("\n"),
+    );
+
+    const parsed = getRenderablePatch(patch, "approval-test");
+    expect(parsed?.kind).toBe("files");
+    if (parsed?.kind !== "files") return;
+    expect(parsed.files[0]?.name).toBe("/repo/src/logger.rs");
+    expect(getDiffLineStat(parsed.files)).toEqual({ additions: 1, deletions: 2 });
+  });
+
+  it("builds a new-file patch for empty oldString", () => {
+    const patch = buildApprovalFileChangePatch({
+      filePath: "src/new-file.ts",
+      oldString: "",
+      newString: "export const answer = 42;",
+    });
+
+    expect(patch).toContain("--- /dev/null");
+    expect(patch).toContain("@@ -0,0 +1,1 @@");
+
+    const parsed = getRenderablePatch(patch, "approval-test");
+    expect(parsed?.kind).toBe("files");
+    if (parsed?.kind !== "files") return;
+    expect(getDiffLineStat(parsed.files)).toEqual({ additions: 1, deletions: 0 });
+  });
+});
 
 describe("buildPatchCacheKey", () => {
   it("returns a stable cache key for identical content", () => {

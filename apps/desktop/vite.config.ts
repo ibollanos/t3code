@@ -4,10 +4,17 @@ import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
 const repoEnv = loadRepoEnv();
 const shouldLaunchElectronAfterPack = process.env.T3CODE_DESKTOP_DEV === "1";
+// Forks publish the CLI as a release tarball, not an npm version; SSH
+// environment provisioning installs the server on the remote host from this
+// spec. Upstream leaves it undefined and uses `t3@<version>` from the registry.
+const sshPackageSpecTemplate = repoEnv.T3CODE_SSH_PACKAGE_SPEC_TEMPLATE?.trim();
 const publicConfigDefine = {
   __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
     repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
   ),
+  __T3CODE_BUILD_SSH_PACKAGE_SPEC_TEMPLATE__: sshPackageSpecTemplate
+    ? JSON.stringify(sshPackageSpecTemplate)
+    : "undefined",
 };
 
 export default defineConfig({
