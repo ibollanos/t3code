@@ -105,11 +105,25 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
   isBackgroundTask?: boolean;
 }
 
+/**
+ * Structured before/after content for a file-change approval, when the
+ * provider surfaced it (Claude Edit/Write). Rendered as a line-aware diff in
+ * the approval card; absent for providers that only send a summary.
+ */
+export interface PendingApprovalFileChange {
+  filePath: string;
+  toolName?: string;
+  oldString: string;
+  newString: string;
+  startLine?: number;
+}
+
 export interface PendingApproval {
   requestId: ApprovalRequestId;
   requestKind: "command" | "file-read" | "file-change";
   createdAt: string;
   detail?: string;
+  fileChange?: PendingApprovalFileChange;
 }
 
 export interface PendingUserInput {
@@ -383,6 +397,31 @@ function isStalePendingRequestFailureDetail(detail: string | undefined): boolean
   );
 }
 
+function parseApprovalFileChange(value: unknown): PendingApprovalFileChange | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.filePath !== "string" ||
+    typeof record.oldString !== "string" ||
+    typeof record.newString !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    filePath: record.filePath,
+    ...(typeof record.toolName === "string" ? { toolName: record.toolName } : {}),
+    oldString: record.oldString,
+    newString: record.newString,
+    ...(typeof record.startLine === "number" &&
+    Number.isInteger(record.startLine) &&
+    record.startLine > 0
+      ? { startLine: record.startLine }
+      : {}),
+  };
+}
+
 export function derivePendingApprovals(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): PendingApproval[] {
@@ -408,6 +447,7 @@ export function derivePendingApprovals(
           ? requestKindFromRequestType(payload.requestType)
           : null;
     const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
+    const fileChange = payload ? parseApprovalFileChange(payload.fileChange) : undefined;
 
     if (activity.kind === "approval.requested" && requestId && requestKind) {
       openByRequestId.set(requestId, {
@@ -415,6 +455,7 @@ export function derivePendingApprovals(
         requestKind,
         createdAt: activity.createdAt,
         ...(detail ? { detail } : {}),
+        ...(fileChange ? { fileChange } : {}),
       });
       continue;
     }

@@ -62,6 +62,15 @@ const PackageJsonPrettyJson = fromJsonStringPretty(PackageJsonSchema);
 const decodePackageJson = Schema.decodeUnknownEffect(PackageJsonPrettyJson);
 const encodePackageJson = Schema.encodeEffect(PackageJsonPrettyJson);
 
+export class EmptyReleaseVersionError extends Schema.TaggedErrorClass<EmptyReleaseVersionError>()(
+  "EmptyReleaseVersionError",
+  {},
+) {
+  override get message() {
+    return "Release version must not be empty. On Windows runners, pass env vars with $env:NAME or set shell: bash — a pwsh-style $NAME expansion blanks it.";
+  }
+}
+
 export const updateReleasePackageVersions = Effect.fn("updateReleasePackageVersions")(function* (
   version: string,
   options: UpdateReleasePackageVersionsOptions = {},
@@ -70,6 +79,13 @@ export const updateReleasePackageVersions = Effect.fn("updateReleasePackageVersi
   const path = yield* Path.Path;
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
   let changed = false;
+
+  // An empty version would blank every releasable manifest (a pwsh job
+  // expanding "$VERSION" instead of "$env:VERSION" did exactly that) — fail
+  // loudly instead of baking a broken build.
+  if (version.trim().length === 0) {
+    return yield* new EmptyReleaseVersionError();
+  }
 
   for (const relativePath of releasePackageFiles) {
     const filePath = path.join(rootDir, relativePath);

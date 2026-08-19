@@ -1127,7 +1127,10 @@ const stageClerkPasskeyNativeBinaries = Effect.fn("stageClerkPasskeyNativeBinari
   const packageRequire = NodeModule.createRequire(packageEntryPath);
 
   for (const artifact of resolveClerkPasskeyNativeArtifacts(platform, arch)) {
-    const sourcePath = yield* Effect.try({
+    // Tolerate missing native packages: Clerk's canary native tarballs have
+    // shipped without their .node binary before, and the runtime loader treats
+    // a missing native module as "passkeys unsupported" anyway.
+    const resolved = yield* Effect.try({
       try: () => packageRequire.resolve(artifact.packageName),
       catch: (cause) =>
         new ClerkPasskeyNativePackageMissingError({
@@ -1138,8 +1141,15 @@ const stageClerkPasskeyNativeBinaries = Effect.fn("stageClerkPasskeyNativeBinari
           arch,
           cause,
         }),
-    });
-    yield* fs.copyFile(sourcePath, path.join(packageDir, artifact.binaryFileName));
+    }).pipe(
+      Effect.catchTag("ClerkPasskeyNativePackageMissingError", () =>
+        Effect.logWarning(
+          `[desktop-artifact] Clerk passkey native package unavailable, skipping passkey support: ${artifact.packageName}`,
+        ).pipe(Effect.as(null)),
+      ),
+    );
+    if (resolved === null) continue;
+    yield* fs.copyFile(resolved, path.join(packageDir, artifact.binaryFileName));
   }
 });
 
@@ -2014,6 +2024,10 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
+  // Forks can brand the packaged app (install dir, Start Menu entry, userData)
+  // without touching apps/desktop/package.json — e.g. "T3 Code (Personal)".
+  const override = process.env.T3CODE_DESKTOP_PRODUCT_NAME?.trim();
+  if (override) return override;
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
@@ -2034,7 +2048,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    // Forks can override the appId (Windows upgrade identity, protocol
+    // registration) so a fork install never collides with the official app.
+    appId: process.env.T3CODE_DESKTOP_APP_ID?.trim() || DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
@@ -2832,7 +2848,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     {
       macIconPng: path.join(repoRoot, iconAssets.macIconPng),
       linuxIconPng: path.join(repoRoot, iconAssets.linuxIconPng),
-      windowsIconIco: path.join(repoRoot, iconAssets.windowsIconIco),
+      // Forks can ship their own Windows icon without replacing the upstream
+      // asset files (e.g. T3CODE_DESKTOP_WINDOWS_ICON=assets/fork/t3-green-windows.ico).
+      windowsIconIco: path.resolve(
+        repoRoot,
+        process.env.T3CODE_DESKTOP_WINDOWS_ICON?.trim() || iconAssets.windowsIconIco,
+      ),
     },
     options.verbose,
   );

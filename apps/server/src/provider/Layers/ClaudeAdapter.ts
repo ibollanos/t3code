@@ -38,6 +38,7 @@ import {
   type ProviderSession,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
+  type RequestedFileChange,
   type RuntimeContentStreamKind,
   RuntimeItemId,
   RuntimeRequestId,
@@ -153,11 +154,17 @@ interface AssistantTextBlockState {
   completionEmitted: boolean;
 }
 
+interface ProviderApprovalResolution {
+  readonly decision: ProviderApprovalDecision;
+  /** Optional user note captured alongside the decision (Claude Code's "amend" flow). */
+  readonly comment?: string;
+}
+
 interface PendingApproval {
   readonly requestType: CanonicalRequestType;
   readonly detail?: string;
   readonly suggestions?: ReadonlyArray<PermissionUpdate>;
-  readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
+  readonly decision: Deferred.Deferred<ProviderApprovalResolution>;
 }
 
 /**
@@ -1146,13 +1153,98 @@ function workflowAgentStatus(entry: ClaudeWorkflowAgentEntry): RuntimeTaskStatus
   }
 }
 
+/**
+ * Cap on the before/after content attached to a file-change approval request.
+ * Anything larger falls back to the plain-text summary — the full strings ride
+ * over the websocket to every connected client, so a pathological Write must
+ * not blow up the event log.
+ */
+const MAX_REQUESTED_FILE_CHANGE_CHARS = 200_000;
+/** Skip the startLine lookup for very large files; reading them is wasted work. */
+const MAX_REQUESTED_FILE_CHANGE_SOURCE_CHARS = 1_000_000;
+
+/**
+ * Pulls structured before/after content out of Edit/Write tool input so the
+ * client can render a line-aware diff in the approval card instead of raw
+ * JSON. Returns undefined for tools whose input doesn't carry a single
+ * old/new pair (e.g. MultiEdit) — those keep the plain-text summary.
+ */
+function extractRequestedFileChange(
+  toolName: string,
+  input: Record<string, unknown>,
+):
+  | { readonly filePath: string; readonly oldString: string; readonly newString: string }
+  | undefined {
+  const filePath = typeof input.file_path === "string" ? input.file_path : undefined;
+  if (!filePath) {
+    return undefined;
+  }
+  if (toolName === "Edit") {
+    const oldString = typeof input.old_string === "string" ? input.old_string : undefined;
+    const newString = typeof input.new_string === "string" ? input.new_string : undefined;
+    if (oldString === undefined || newString === undefined) {
+      return undefined;
+    }
+    return { filePath, oldString, newString };
+  }
+  if (toolName === "Write") {
+    const newString = typeof input.content === "string" ? input.content : undefined;
+    if (newString === undefined) {
+      return undefined;
+    }
+    return { filePath, oldString: "", newString };
+  }
+  return undefined;
+}
+
+/**
+ * Builds the structured fileChange for an approval request, resolving the
+ * 1-based line where `oldString` starts in the current file so the client can
+ * render real line numbers. Best-effort: any read failure or miss simply
+ * omits startLine.
+ */
+const resolveRequestedFileChange = Effect.fn("resolveRequestedFileChange")(function* (
+  toolName: string,
+  input: Record<string, unknown>,
+  fileSystem: FileSystem.FileSystem,
+) {
+  const extracted = extractRequestedFileChange(toolName, input);
+  if (
+    !extracted ||
+    extracted.oldString.length > MAX_REQUESTED_FILE_CHANGE_CHARS ||
+    extracted.newString.length > MAX_REQUESTED_FILE_CHANGE_CHARS
+  ) {
+    return undefined;
+  }
+
+  let startLine: number | undefined;
+  if (extracted.oldString.length > 0) {
+    const fileContent = yield* fileSystem
+      .readFileString(extracted.filePath)
+      .pipe(Effect.orElseSucceed(() => null));
+    if (fileContent !== null && fileContent.length <= MAX_REQUESTED_FILE_CHANGE_SOURCE_CHARS) {
+      const index = fileContent.indexOf(extracted.oldString);
+      if (index >= 0) {
+        startLine = fileContent.slice(0, index).split("\n").length;
+      }
+    }
+  }
+
+  return {
+    filePath: extracted.filePath,
+    toolName,
+    oldString: extracted.oldString,
+    newString: extracted.newString,
+    ...(startLine !== undefined ? { startLine } : {}),
+  } satisfies RequestedFileChange;
+});
+
 function summarizeToolRequest(toolName: string, input: Record<string, unknown>): string {
   const commandValue = input.command ?? input.cmd;
   const command = typeof commandValue === "string" ? commandValue : undefined;
   if (command && command.trim().length > 0) {
     return `${toolName}: ${command.trim().slice(0, 400)}`;
   }
-
   // For agent/subagent tools, prefer the human-readable description or prompt
   // over raw JSON. The structured subagent_type is carried separately on the
   // task.* payloads (role) — the label is display-only.
@@ -3639,7 +3731,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context.stopped = true;
 
     for (const [requestId, pending] of context.pendingApprovals) {
-      yield* Deferred.succeed(pending.decision, "cancel");
+      yield* Deferred.succeed(pending.decision, { decision: "cancel" });
       const stamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
         type: "request.resolved",
@@ -3999,13 +4091,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const requestType = classifyRequestType(toolName);
         const detail = summarizeToolRequest(toolName, toolInput);
-        const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
+        const decisionDeferred = yield* Deferred.make<ProviderApprovalResolution>();
         const pendingApproval: PendingApproval = {
           requestType,
           detail,
           decision: decisionDeferred,
           ...(callbackOptions.suggestions ? { suggestions: callbackOptions.suggestions } : {}),
         };
+
+        const fileChange = yield* resolveRequestedFileChange(toolName, toolInput, fileSystem);
 
         const requestedStamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -4024,6 +4118,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               input: toolInput,
               ...(callbackOptions.toolUseID ? { toolUseId: callbackOptions.toolUseID } : {}),
             },
+            ...(fileChange ? { fileChange } : {}),
           },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: callbackOptions.toolUseID,
@@ -4045,15 +4140,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             return;
           }
           pendingApprovals.delete(requestId);
-          runFork(Deferred.succeed(decisionDeferred, "cancel"));
+          runFork(Deferred.succeed(decisionDeferred, { decision: "cancel" }));
         };
 
         callbackOptions.signal.addEventListener("abort", onAbort, {
           once: true,
         });
 
-        const decision = yield* Deferred.await(decisionDeferred);
+        const resolution = yield* Deferred.await(decisionDeferred);
         pendingApprovals.delete(requestId);
+        const { decision, comment } = resolution;
 
         const resolvedStamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -4081,6 +4177,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
 
         if (decision === "accept" || decision === "acceptForSession") {
+          if (comment) {
+            // The SDK allow-result carries no feedback field, so an approval
+            // note is steered into the running turn as a plain user message —
+            // the same mechanism sendTurn uses for mid-turn messages.
+            yield* Queue.offer(context.promptQueue, {
+              type: "message",
+              message: buildUserMessage({ sdkContent: [{ type: "text", text: comment }] }),
+            }).pipe(Effect.ignore);
+          }
           return {
             behavior: "allow",
             updatedInput: toolInput,
@@ -4098,9 +4203,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         return {
           behavior: "deny",
           message:
-            decision === "cancel"
+            comment ??
+            (decision === "cancel"
               ? "User cancelled tool execution."
-              : "User declined tool execution.",
+              : "User declined tool execution."),
         } satisfies PermissionResult;
       });
 
@@ -4543,7 +4649,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   );
 
   const respondToRequest: ClaudeAdapterShape["respondToRequest"] = Effect.fn("respondToRequest")(
-    function* (threadId, requestId, decision) {
+    function* (threadId, requestId, decision, comment) {
       const context = yield* requireSession(threadId);
       const pending = context.pendingApprovals.get(requestId);
       if (!pending) {
@@ -4555,7 +4661,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       context.pendingApprovals.delete(requestId);
-      yield* Deferred.succeed(pending.decision, decision);
+      const trimmedComment = comment?.trim();
+      yield* Deferred.succeed(pending.decision, {
+        decision,
+        ...(trimmedComment ? { comment: trimmedComment } : {}),
+      });
     },
   );
 

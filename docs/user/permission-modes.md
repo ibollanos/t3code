@@ -26,6 +26,12 @@ unattended until it finishes or asks a question of its own.
 Approvals appear inline in the conversation. Approve or reject one and the agent continues from
 there.
 
+When the agent asks to edit a file, the approval card shows the file and line stats; click it to
+review the proposed change as a line-numbered diff in the diff panel's **Pending approval** view.
+You can also attach a note before deciding: type it into the comment field and it is sent to the
+agent along with your decision — as feedback on a decline, or as a follow-up instruction on an
+approve.
+
 ## Choosing a Mode
 
 Use **Full access** for work in a worktree or a sandbox you can throw away.

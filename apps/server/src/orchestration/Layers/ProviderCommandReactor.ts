@@ -1221,6 +1221,7 @@ const make = Effect.gen(function* () {
         threadId: event.payload.threadId,
         requestId: event.payload.requestId,
         decision: event.payload.decision,
+        ...(event.payload.comment !== undefined ? { comment: event.payload.comment } : {}),
       })
       .pipe(
         Effect.catchCause((cause) =>

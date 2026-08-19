@@ -30,4 +30,34 @@ describe("runtimeEventToActivities approval details", () => {
     expect(activity?.kind).toBe("approval.requested");
     expect((activity?.payload as Record<string, unknown> | undefined)?.detail).toBe(detail);
   });
+
+  it("forwards the structured fileChange for file-change approvals", () => {
+    const fileChange = {
+      filePath: "/repo/src/logger.rs",
+      toolName: "Edit",
+      oldString: "let level = Level::INFO;",
+      newString: "let level = Level::DEBUG;",
+      startLine: 6,
+    };
+    const event = {
+      type: "request.opened",
+      eventId: EventId.make("evt-request-opened-file-change"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: "2026-07-18T00:00:00.000Z",
+      threadId: ThreadId.make("thread-1"),
+      requestId: RuntimeRequestId.make("approval-2"),
+      payload: {
+        requestType: "file_change_approval",
+        detail: "Edit: /repo/src/logger.rs",
+        fileChange,
+      },
+    } satisfies ProviderRuntimeEvent;
+
+    const [activity] = runtimeEventToActivities(event);
+
+    expect(activity?.kind).toBe("approval.requested");
+    const payload = activity?.payload as Record<string, unknown> | undefined;
+    expect(payload?.requestKind).toBe("file-change");
+    expect(payload?.fileChange).toEqual(fileChange);
+  });
 });

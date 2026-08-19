@@ -13,6 +13,7 @@ import * as TestConsole from "effect/testing/TestConsole";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 
 import {
+  EmptyReleaseVersionError,
   ReleaseGitHubOutputConfigurationError,
   ReleaseGitHubOutputWriteError,
   ReleasePackageManifestError,
@@ -108,6 +109,27 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
     }),
   );
 
+  it.effect("rejects an empty release version without touching manifests", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "update-release-package-versions-empty-",
+      });
+
+      yield* writePackageJsonFixtures(baseDir, "0.0.1");
+
+      const error = yield* updateReleasePackageVersions("  ", { rootDir: baseDir }).pipe(
+        Effect.flip,
+      );
+      assert.instanceOf(error, EmptyReleaseVersionError);
+      const versions = yield* readReleaseVersions(baseDir);
+      assert.deepStrictEqual(
+        Array.from(versions.entries()),
+        releasePackageFiles.map((relativePath) => [relativePath, "0.0.1"]),
+      );
+    }),
+  );
+
   it.effect("preserves manifest read context and the filesystem cause", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -145,6 +167,9 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
         rootDir: baseDir,
       }).pipe(Effect.flip);
 
+      if (!Schema.is(ReleasePackageManifestError)(error)) {
+        throw new Error("expected ReleasePackageManifestError");
+      }
       assert.equal(error.operation, "decode");
       assert.equal(error.filePath, filePath);
       assert.isTrue(Schema.isSchemaError(error.cause));
@@ -168,6 +193,9 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
         rootDir: baseDir,
       }).pipe(Effect.flip, Effect.ensuring(fs.chmod(filePath, 0o600).pipe(Effect.orDie)));
 
+      if (!Schema.is(ReleasePackageManifestError)(error)) {
+        throw new Error("expected ReleasePackageManifestError");
+      }
       assert.equal(error.operation, "write");
       assert.equal(error.filePath, filePath);
       assert.instanceOf(error.cause, PlatformError.PlatformError);

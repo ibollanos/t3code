@@ -3360,6 +3360,208 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("emits a structured fileChange and threads the comment into the deny message", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "decline this",
+        attachments: [],
+      });
+      yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-approval-comment",
+        uuid: "stream-approval-comment-thread",
+        parent_tool_use_id: null,
+        event: {
+          type: "message_start",
+          message: {
+            id: "msg-approval-comment-thread",
+          },
+        },
+      } as unknown as SDKMessage);
+
+      const threadStarted = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(threadStarted._tag, "Some");
+
+      const canUseTool = harness.getLastCreateQueryInput()?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      const permissionPromise = canUseTool(
+        "Edit",
+        {
+          file_path: "/tmp/claude-adapter-test/src/logger.rs",
+          old_string: "let level = Level::INFO;",
+          new_string: "let level = Level::DEBUG;",
+        },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-use-edit-1",
+        },
+      );
+
+      const requested = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(requested._tag, "Some");
+      if (requested._tag !== "Some" || requested.value.type !== "request.opened") {
+        return;
+      }
+      assert.equal(requested.value.payload.requestType, "file_change_approval");
+      assert.deepEqual(requested.value.payload.fileChange, {
+        filePath: "/tmp/claude-adapter-test/src/logger.rs",
+        toolName: "Edit",
+        oldString: "let level = Level::INFO;",
+        newString: "let level = Level::DEBUG;",
+      });
+      const runtimeRequestId = requested.value.requestId;
+      if (runtimeRequestId === undefined) {
+        return;
+      }
+
+      yield* adapter.respondToRequest(
+        session.threadId,
+        ApprovalRequestId.make(runtimeRequestId),
+        "decline",
+        "use a named constant instead of a string",
+      );
+
+      const resolved = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(resolved._tag, "Some");
+      if (resolved._tag !== "Some" || resolved.value.type !== "request.resolved") {
+        return;
+      }
+      assert.equal(resolved.value.payload.decision, "decline");
+
+      const permissionResult = (yield* Effect.promise(() => permissionPromise)) as PermissionResult;
+      if (permissionResult.behavior !== "deny") {
+        assert.fail(`expected deny, got ${permissionResult.behavior}`);
+      }
+      assert.equal(permissionResult.message, "use a named constant instead of a string");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("steers an approve-with-comment note into the running turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "approve this",
+        attachments: [],
+      });
+      yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-approval-steer",
+        uuid: "stream-approval-steer-thread",
+        parent_tool_use_id: null,
+        event: {
+          type: "message_start",
+          message: {
+            id: "msg-approval-steer-thread",
+          },
+        },
+      } as unknown as SDKMessage);
+
+      const threadStarted = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(threadStarted._tag, "Some");
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      const permissionPromise = canUseTool(
+        "Write",
+        {
+          file_path: "/tmp/claude-adapter-test/src/new-file.ts",
+          content: "export const answer = 42;\n",
+        },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-use-write-1",
+        },
+      );
+
+      const requested = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(requested._tag, "Some");
+      if (requested._tag !== "Some" || requested.value.type !== "request.opened") {
+        return;
+      }
+      assert.deepEqual(requested.value.payload.fileChange, {
+        filePath: "/tmp/claude-adapter-test/src/new-file.ts",
+        toolName: "Write",
+        oldString: "",
+        newString: "export const answer = 42;\n",
+      });
+      const runtimeRequestId = requested.value.requestId;
+      if (runtimeRequestId === undefined) {
+        return;
+      }
+
+      yield* adapter.respondToRequest(
+        session.threadId,
+        ApprovalRequestId.make(runtimeRequestId),
+        "accept",
+        "ship it, but add a test next",
+      );
+
+      const permissionResult = (yield* Effect.promise(() => permissionPromise)) as PermissionResult;
+      assert.equal(permissionResult.behavior, "allow");
+
+      // The initial sendTurn message is first on the prompt stream; the
+      // approval note must follow as a steered user message.
+      const promptIterator = createInput?.prompt[Symbol.asyncIterator]();
+      assert.notEqual(promptIterator, undefined);
+      if (!promptIterator) {
+        return;
+      }
+      yield* Effect.promise(() => promptIterator.next());
+      const steered = yield* Effect.promise(() => promptIterator.next());
+      assert.equal(steered.done, false);
+      const content = steered.value?.message.content;
+      const steeredText =
+        typeof content === "string"
+          ? content
+          : Array.isArray(content) && content[0]?.type === "text"
+            ? content[0].text
+            : undefined;
+      assert.equal(steeredText, "ship it, but add a test next");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("acceptForSession returns session-scoped permission updates", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
