@@ -8,7 +8,8 @@ import { resolveStorage } from "./lib/storage";
 export type DiffPanelSelection =
   | { kind: "branch"; baseRef: string | null }
   | { kind: "unstaged" }
-  | { kind: "turn"; turnId: TurnId; filePath: string | null; revealRequestId: number };
+  | { kind: "turn"; turnId: TurnId; filePath: string | null; revealRequestId: number }
+  | { kind: "pending" };
 
 export type DiffRenderMode = "stacked" | "split";
 
@@ -23,6 +24,7 @@ interface DiffPanelStoreState {
   selectGitScope: (ref: ScopedThreadRef, scope: "branch" | "unstaged") => void;
   selectBranchBaseRef: (ref: ScopedThreadRef, baseRef: string | null) => void;
   selectTurn: (ref: ScopedThreadRef, turnId: TurnId, filePath?: string) => void;
+  selectPending: (ref: ScopedThreadRef) => void;
   reconcileTurnSelection: (ref: ScopedThreadRef, availableTurnIds: ReadonlyArray<TurnId>) => void;
   removeThread: (ref: ScopedThreadRef) => void;
 }
@@ -89,6 +91,16 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
                 filePath: filePath?.trim() || null,
                 revealRequestId: previous?.kind === "turn" ? previous.revealRequestId + 1 : 1,
               },
+            },
+          };
+        }),
+      selectPending: (ref) =>
+        set((state) => {
+          const threadKey = scopedThreadKey(ref);
+          return {
+            byThreadKey: {
+              ...state.byThreadKey,
+              [threadKey]: { kind: "pending" },
             },
           };
         }),

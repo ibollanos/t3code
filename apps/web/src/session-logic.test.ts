@@ -104,6 +104,63 @@ describe("derivePendingApprovals", () => {
     ]);
   });
 
+  it("carries a structured fileChange through to pending approvals", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "approval-open-file-change",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "File-change approval requested",
+        tone: "approval",
+        payload: {
+          requestId: "req-file-change",
+          requestKind: "file-change",
+          detail: "Edit: /repo/src/logger.rs",
+          fileChange: {
+            filePath: "/repo/src/logger.rs",
+            toolName: "Edit",
+            oldString: "let level = Level::INFO;",
+            newString: "let level = Level::DEBUG;",
+            startLine: 6,
+          },
+        },
+      }),
+      makeActivity({
+        id: "approval-open-malformed",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "approval.requested",
+        summary: "File-change approval requested",
+        tone: "approval",
+        payload: {
+          requestId: "req-malformed",
+          requestKind: "file-change",
+          fileChange: { filePath: 42 },
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      {
+        requestId: "req-file-change",
+        requestKind: "file-change",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        detail: "Edit: /repo/src/logger.rs",
+        fileChange: {
+          filePath: "/repo/src/logger.rs",
+          toolName: "Edit",
+          oldString: "let level = Level::INFO;",
+          newString: "let level = Level::DEBUG;",
+          startLine: 6,
+        },
+      },
+      {
+        requestId: "req-malformed",
+        requestKind: "file-change",
+        createdAt: "2026-02-23T00:00:02.000Z",
+      },
+    ]);
+  });
+
   it("maps canonical requestType payloads into pending approvals", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

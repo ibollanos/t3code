@@ -5473,7 +5473,7 @@ function ChatViewContent(props: ChatViewProps) {
   };
 
   const onRespondToApproval = useCallback(
-    async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
+    async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision, comment?: string) => {
       if (!activeThreadId) return;
 
       setRespondingRequestIds((existing) =>
@@ -5485,6 +5485,7 @@ function ChatViewContent(props: ChatViewProps) {
           threadId: activeThreadId,
           requestId,
           decision,
+          ...(comment !== undefined ? { comment } : {}),
         },
       });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {

@@ -108,6 +108,8 @@ import { resolveContextWindowModelDisplayName } from "./ContextWindowMeter.logic
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
+import { useDiffPanelStore } from "../../diffPanelStore";
+import { useRightPanelStore } from "../../rightPanelStore";
 import { Separator } from "../ui/separator";
 import {
   getComposerPromptLengthValidationMessage,
@@ -583,6 +585,7 @@ export interface ChatComposerProps {
   onRespondToApproval: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
+    comment?: string,
   ) => Promise<unknown>;
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
@@ -678,6 +681,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onExpandImage,
   } = props;
   const isSendDisabled = sendDisabledReason !== null;
+
+  // Optional note sent alongside an approval decision (Claude Code's "amend"
+  // flow). Local to the composer; reset whenever the active request changes.
+  const [approvalComment, setApprovalComment] = useState("");
+  const activePendingApprovalRequestId = activePendingApproval?.requestId ?? null;
+  useEffect(() => {
+    setApprovalComment("");
+  }, [activePendingApprovalRequestId]);
+  const handleRespondToApproval = useCallback(
+    (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
+      const comment = approvalComment.trim();
+      setApprovalComment("");
+      return onRespondToApproval(requestId, decision, comment.length > 0 ? comment : undefined);
+    },
+    [approvalComment, onRespondToApproval],
+  );
+  // The approval card shows only the file + stats; the proposed diff itself
+  // lives in the diff panel's pending-approval view.
+  const handleOpenPendingDiff = useCallback(() => {
+    useRightPanelStore.getState().open(routeThreadRef, "diff");
+    useDiffPanelStore.getState().selectPending(routeThreadRef);
+  }, [routeThreadRef]);
 
   // ------------------------------------------------------------------
   // Store subscriptions (prompt / images / terminal contexts)
@@ -2733,6 +2758,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <ComposerPendingApprovalPanel
                   approval={activePendingApproval}
                   pendingCount={pendingApprovals.length}
+                  comment={approvalComment}
+                  onCommentChange={setApprovalComment}
+                  onOpenPendingDiff={
+                    activePendingApproval.fileChange ? handleOpenPendingDiff : undefined
+                  }
                 />
               </div>
             ) : pendingUserInputs.length > 0 ? (
@@ -2763,12 +2793,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               <ComposerPendingApprovalPanel
                 approval={activePendingApproval}
                 pendingCount={pendingApprovals.length}
+                comment={approvalComment}
+                onCommentChange={setApprovalComment}
+                onOpenPendingDiff={
+                  activePendingApproval.fileChange ? handleOpenPendingDiff : undefined
+                }
               />
               <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-3 sm:px-4">
                 <ComposerPendingApprovalActions
                   requestId={activePendingApproval.requestId}
                   isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
-                  onRespondToApproval={onRespondToApproval}
+                  onRespondToApproval={handleRespondToApproval}
                 />
               </div>
             </div>
@@ -3126,7 +3161,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               <ComposerPendingApprovalActions
                 requestId={activePendingApproval.requestId}
                 isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
-                onRespondToApproval={onRespondToApproval}
+                onRespondToApproval={handleRespondToApproval}
               />
             </div>
           ) : (

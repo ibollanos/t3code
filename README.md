@@ -1,120 +1,145 @@
-# T3 Code
+# T3 Code (personal fork)
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+Personal fork of [T3 Code](https://github.com/pingdotgg/t3code). For full product documentation,
+see the [upstream README](https://github.com/pingdotgg/t3code#readme).
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, and OpenCode. If they're set up on your computer, T3 Code can control them.
+## What this fork adds
 
-## "Wait, what are you selling me?"
+- **Line-aware approval diffs for Claude Code file changes.** When the agent asks to edit a file,
+  the proposed change renders as a line-numbered diff in the Diff panel's **Pending approval**
+  view (click the file row in the approval card to jump there), and the approval card has a
+  comment field whose text is sent to the agent along with your decision — as feedback on a
+  decline, or as a follow-up instruction on an approve.
 
-Nothing. We built T3 Code because we wanted the best possible development experience with agents. We were inspired by existing solutions like the Codex desktop app, Conductor, Claude Desktop and Cursor Glass, but none met our bar.
-
-We wanted something performant, remote-ready, and truly open. If we ever go the wrong direction, we want you to have everything you need to fork and build the editor that you want.
-
-## Installation
-
-> [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, Grok Build and OpenCode. Install and authenticate at least one provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `agent login`
-> - Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
-
-### Try it out (install-free)
-
-The easiest way to test T3 Code is to run the server in your terminal (requires Node.js 22.16+, 23.11+, or 24.10+):
+## Running this fork
 
 ```bash
-npx t3@latest
+pnpm install
+pnpm --filter @t3tools/web build
+node apps/server/src/bin.ts ~ --host 0.0.0.0 --port 1337 --base-dir ~/.t3
 ```
 
-This will launch T3 Code's backend on your machine as well as the local web app to control your agents.
+- The positional `~` is the server's workspace root. Keep it above every project you work on —
+  the server sandboxes working-tree diffs to its own root and rejects projects outside it.
+- `--host 0.0.0.0` makes the app reachable from other machines on the local network
+  (`http://<this-machine>:1337`). Open the firewall port if needed:
+  `sudo firewall-cmd --add-port=1337/tcp`.
+- `--base-dir ~/.t3` reuses the installed app's state (threads, settings, provider credentials).
+  Quit any other T3 Code instance first — one server per database.
+- To pair another device: `node apps/server/src/bin.ts pair --base-dir ~/.t3`, then open the
+  printed URL on that device (swap in the LAN IP if it prints a loopback host).
 
-Tip: Use `npx t3@latest --help` for the full CLI reference.
+## Fork artifacts (releases)
 
-### Desktop app
+The fork has its own release pipeline: **Actions → Fork Release → Run workflow**, with a version
+like `0.0.34-fork.1`. It builds all three artifacts and attaches them to a GitHub Release at
+`github.com/ibollanos/t3code/releases` (tag `fork-v<version>`):
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+| Artifact                         | What it is                                   | Install                                     |
+| -------------------------------- | -------------------------------------------- | ------------------------------------------- |
+| `t3-<version>.tgz`               | The server as an npm package (like `npx t3`) | `npm i -g <file-or-url>`, then run `t3`     |
+| `T3-Code-<version>-x64.AppImage` | Linux desktop app                            | `chmod +x` and run                          |
+| `T3-Code-<version>-x64.exe`      | Windows installer                            | run it — installs as **T3 Code (Personal)** |
 
-#### Windows (`winget`)
+Every artifact is a direct-download URL, so you can install straight from GitHub without cloning
+anything — for release version `0.0.34-fork.1` (tag `fork-v0.0.34-fork.1`):
 
 ```bash
-winget install T3Tools.T3Code
+# Server CLI
+npm i -g https://github.com/ibollanos/t3code/releases/download/fork-v0.0.34-fork.1/t3-0.0.34-fork.1.tgz
+
+# Linux desktop app
+curl -LO https://github.com/ibollanos/t3code/releases/download/fork-v0.0.34-fork.1/T3-Code-0.0.34-fork.1-x86_64.AppImage
+chmod +x T3-Code-0.0.34-fork.1-x86_64.AppImage
+
+# Windows installer: download
+# https://github.com/ibollanos/t3code/releases/download/fork-v0.0.34-fork.1/T3-Code-0.0.34-fork.1-x64.exe
 ```
 
-#### macOS (Homebrew)
+## Running the server CLI
+
+Once the `t3` package is installed (from the tarball or the release URL above):
 
 ```bash
-brew install --cask t3-code
+t3 --help                                        # all commands and flags
+t3 ~ --host 0.0.0.0 --port 1337 --base-dir ~/.t3 # serve on the LAN with your real state
 ```
 
-#### Arch Linux (AUR)
+The arguments are the same as in "Running this fork" above: positional workspace root, `--host`,
+`--port`, `--base-dir ~/.t3` (quit any other T3 Code instance first — one server per database).
+Pair another device with `t3 pair --base-dir ~/.t3`.
 
-Stable:
+Without installing anything, the same CLI runs from a checkout:
 
 ```bash
-yay -S t3code-bin
+node apps/server/dist/bin.mjs ~ --host 0.0.0.0 --port 1337 --base-dir ~/.t3  # from the built bundle
+node apps/server/src/bin.ts ~ --host 0.0.0.0 --port 1337 --base-dir ~/.t3    # straight from source
 ```
 
-Nightly:
+The Windows build is branded **T3 Code (Personal)** with a dark-green icon and its own app id, so
+it installs alongside the official T3 Code without touching it. Builds are unsigned: Windows
+SmartScreen will warn once ("More info → Run anyway").
+
+Desktop apps built by this workflow watch **this fork's** releases for auto-updates, so a new
+workflow run is all it takes to ship an update to installed copies.
+
+Do not push bare `v*.*.*` tags on the fork — that tag pattern fires upstream's release workflow,
+which cannot run here.
+
+### Building the artifacts locally instead
 
 ```bash
-yay -S t3code-nightly-bin
+# Server CLI tarball → release/t3-<version>.tgz
+pnpm --filter @t3tools/web build
+node apps/server/scripts/cli.ts build
+node scripts/pack-cli-tarball.mjs
+
+# Linux AppImage → release/T3-Code-<version>-x64.AppImage (needs cargo + ImageMagick)
+PATH="$PWD/node_modules/.bin:$PATH" node scripts/build-desktop-artifact.ts \
+  --platform linux --target AppImage --arch x64 --build-version 0.0.34-fork.1
+
+# Windows installer requires a Windows host (or the workflow above); on one:
+#   set T3CODE_DESKTOP_PRODUCT_NAME=T3 Code (Personal)
+#   set T3CODE_DESKTOP_APP_ID=com.ibollanos.t3code-personal
+#   set T3CODE_DESKTOP_WINDOWS_ICON=assets/fork/t3-green-windows.ico
+#   node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64 --build-version ...
 ```
 
-The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
+## Syncing with upstream
 
-## Some notes
-
-We are very very early in this project. Expect bugs.
-
-We are (mostly) not accepting contributions yet. Small fixes may be considered. Big features will not be.
-
-## Documentation
-
-Full docs live in [docs/](./docs). There's no docs site yet.
-
-- [Install and first run](./docs/user/install.md)
-- [Permission modes](./docs/user/permission-modes.md)
-- [Keyboard shortcuts](./docs/user/keybindings.md)
-- [Customize a project icon](./docs/user/project-settings.md)
-- [Remote access from a phone or another machine](./docs/user/remote-access.md)
-- [Keeping app and server in sync](./docs/user/updating.md)
-- [Source control integrations](./docs/user/source-control.md)
-- Multiple accounts: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md)
-- Linux: [run T3 Code as a background service](./docs/user/background-service.md)
-
-Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
-
-## If you REALLY want to contribute still.... read this first
-
-### Install `vp`
-
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
-
-#### macOS / Linux
+One-time remote setup (this checkout currently points straight at upstream):
 
 ```bash
-curl -fsSL https://vite.plus | bash
+git remote rename origin upstream          # upstream = github.com/pingdotgg/t3code
+git remote add origin git@github.com:<you>/t3code.git
+git push -u origin approval-diffs:main     # fork's main = upstream main + this fork's commit
 ```
 
-#### Windows
+Pull the latest upstream changes into the fork:
 
 ```bash
-irm https://vite.plus/ps1 | iex
+git fetch upstream
+git merge upstream/main
 ```
 
-Checkout their getting started guide for more information: https://viteplus.dev/guide/
+- **No conflicts**: the merge completes on its own — commit with the default message and
+  `git push`.
+- **Conflicts**: `git status` lists the conflicting files. Either resolve them (edit,
+  `git add <file>`, `git commit`) or bail out entirely and keep the fork as it was:
 
-### Install dependencies
+  ```bash
+  git merge --abort
+  ```
+
+  `README.md` is the file most likely to conflict, because this fork replaces it. To keep ours
+  during a conflicted merge: `git checkout --ours README.md && git add README.md && git commit`.
+
+## Extending the fork's changes
+
+The fork's changes live in a single commit on top of upstream `main`, so adding more is:
 
 ```bash
-vp i
+git add -A
+git commit --amend
+git push --force-with-lease
 ```
-
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR.
-
-Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
-
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
